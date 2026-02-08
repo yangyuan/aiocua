@@ -1,0 +1,2 @@
+class OperatorRuntimeException(Exception):
+    pass
