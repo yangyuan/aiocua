@@ -496,3 +496,30 @@ class DarwinCuaOperator(BaseCuaOperator):
 
     async def wait(self) -> None:
         await asyncio.sleep(1)
+
+    async def axtree(self, root_node_id=None, max_depth=8):
+        raise NotImplementedError("axtree is not implemented on macOS")
+
+    async def ax_click(self, node_id):
+        raise NotImplementedError("ax_click is not implemented on macOS")
+
+    async def ax_double_click(self, node_id):
+        raise NotImplementedError("ax_double_click is not implemented on macOS")
+
+    async def ax_type(self, text, node_id):
+        raise NotImplementedError("ax_type is not implemented on macOS")
+
+    async def ax_scroll(self, scroll_x, scroll_y, node_id):
+        raise NotImplementedError("ax_scroll is not implemented on macOS")
+
+    async def ax_focus(self, node_id):
+        raise NotImplementedError("ax_focus is not implemented on macOS")
+
+    async def ax_expand(self, node_id):
+        raise NotImplementedError("ax_expand is not implemented on macOS")
+
+    async def ax_collapse(self, node_id):
+        raise NotImplementedError("ax_collapse is not implemented on macOS")
+
+    async def ax_select(self, node_id):
+        raise NotImplementedError("ax_select is not implemented on macOS")

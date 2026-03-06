@@ -1,7 +1,7 @@
 [project]
 name = "aiocua"
 description = "A Simple Python CUA (Computer Use Agent) Solution"
-version = "0.0.0a0"
+version = "0.0.0a1"
 requires-python = ">=3.10"
 readme = "README.md"
 license-files = ["LICENSE"]

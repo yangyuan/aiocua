@@ -5,8 +5,9 @@ from io import BytesIO
 from ctypes import wintypes
 from typing import Optional, Union
 from PIL import ImageGrab, Image
-from aiocua.contracts.computer import MonitorMetadata
+from aiocua.contracts.computer import AxNode, AxNodeBounds, AxNodeState, MonitorMetadata
 from aiocua.contracts.error import OperatorRuntimeException
+from aiocua.helpers import com
 from aiocua.operators.base import BaseCuaOperator
 
 
@@ -228,6 +229,296 @@ def _send_input(input_obj: Union[INPUT, list[INPUT]]) -> None:
         user32.SendInput(n_inputs, ctypes.byref(arr), ctypes.sizeof(INPUT))
     else:
         user32.SendInput(1, ctypes.byref(input_obj), ctypes.sizeof(input_obj))
+
+
+_CLSID_CUIAutomation = com.guid("{FF48DBA4-60EF-4201-AA87-54103EEF594E}")
+_IID_IUIAutomation = com.guid("{30CBE57D-D9D0-452A-AB13-7AC5AC4825EE}")
+
+_IID_InvokePattern = com.guid("{FB377FBE-8EA6-46D5-9C73-6499642D3059}")
+_IID_ValuePattern = com.guid("{A94CD8B1-0844-4CD6-9D2D-640537AB39E9}")
+_IID_ExpandCollapsePattern = com.guid("{619BE086-1F4E-4EE4-BAFA-210128738730}")
+_IID_TogglePattern = com.guid("{94CF8058-9B8D-4AB9-8BFD-4CD0A33C8C70}")
+_IID_ScrollPattern = com.guid("{88F4D42A-E881-4573-A11C-05A5B44E9170}")
+_IID_SelectionItemPattern = com.guid("{A8EFA66A-0FDA-421A-9194-38021F3578EA}")
+_IID_ScrollItemPattern = com.guid("{B488300F-D015-4F19-9C29-BB595E3645EF}")
+
+_PAT_INVOKE = 10000
+_PAT_VALUE = 10002
+_PAT_SCROLL = 10004
+_PAT_EXPAND_COLLAPSE = 10005
+_PAT_SELECTION_ITEM = 10010
+_PAT_TOGGLE = 10015
+_PAT_SCROLL_ITEM = 10017
+
+_PAT_IID: dict[int, com.GUID] = {
+    _PAT_INVOKE: _IID_InvokePattern,
+    _PAT_VALUE: _IID_ValuePattern,
+    _PAT_SCROLL: _IID_ScrollPattern,
+    _PAT_EXPAND_COLLAPSE: _IID_ExpandCollapsePattern,
+    _PAT_SELECTION_ITEM: _IID_SelectionItemPattern,
+    _PAT_TOGGLE: _IID_TogglePattern,
+    _PAT_SCROLL_ITEM: _IID_ScrollItemPattern,
+}
+
+_UIA_GET_ROOT = 5
+_UIA_CONTROL_VIEW_WALKER = 14
+_EL_SET_FOCUS = 3
+_EL_GET_RUNTIME_ID = 4
+_EL_GET_PATTERN_AS = 14
+_EL_CONTROL_TYPE = 21
+_EL_NAME = 23
+_EL_IS_ENABLED = 28
+_EL_AUTOMATION_ID = 29
+_EL_HAS_KEYBOARD_FOCUS = 26
+_EL_IS_KEYBOARD_FOCUSABLE = 27
+_EL_IS_OFFSCREEN = 38
+_EL_BOUNDING_RECT = 43
+_TW_FIRST_CHILD = 4
+_TW_NEXT_SIBLING = 6
+_INV_INVOKE = 3
+_VAL_SET_VALUE = 3
+_VAL_CURRENT_VALUE = 4
+_VAL_IS_READONLY = 5
+_TOG_TOGGLE = 3
+_TOG_CURRENT_STATE = 4
+_EC_EXPAND = 3
+_EC_COLLAPSE = 4
+_EC_CURRENT_STATE = 5
+_SCR_SCROLL = 3
+_SEL_SELECT = 3
+_SCI_SCROLL_INTO_VIEW = 3
+
+_CONTROL_TYPES: dict[int, str] = {
+    50000: "button",
+    50001: "calendar",
+    50002: "checkbox",
+    50003: "combobox",
+    50004: "edit",
+    50005: "hyperlink",
+    50006: "image",
+    50007: "listitem",
+    50008: "list",
+    50009: "menu",
+    50010: "menubar",
+    50011: "menuitem",
+    50012: "progressbar",
+    50013: "radiobutton",
+    50014: "scrollbar",
+    50015: "slider",
+    50016: "spinner",
+    50017: "statusbar",
+    50018: "tab",
+    50019: "tabitem",
+    50020: "text",
+    50021: "toolbar",
+    50022: "tooltip",
+    50023: "tree",
+    50024: "treeitem",
+    50025: "custom",
+    50026: "group",
+    50027: "thumb",
+    50028: "datagrid",
+    50029: "dataitem",
+    50030: "document",
+    50031: "splitbutton",
+    50032: "window",
+    50033: "pane",
+    50034: "header",
+    50035: "headeritem",
+    50036: "table",
+    50037: "titlebar",
+    50038: "separator",
+}
+
+_MAX_NODES = 500
+
+_AX_OUT_VP = (ctypes.POINTER(ctypes.c_void_p),)
+_AX_OUT_INT = (ctypes.POINTER(ctypes.c_int),)
+_AX_OUT_BOOL = (ctypes.POINTER(wintypes.BOOL),)
+_AX_OUT_RECT = (ctypes.POINTER(wintypes.RECT),)
+
+
+def _el_control_type(el: int) -> Optional[int]:
+    v = ctypes.c_int()
+    hr = com.vc(el, _EL_CONTROL_TYPE, ctypes.c_long, _AX_OUT_INT, ctypes.byref(v))
+    return v.value if hr >= 0 else None
+
+
+def _el_is_offscreen(el: int) -> bool:
+    v = wintypes.BOOL()
+    hr = com.vc(el, _EL_IS_OFFSCREEN, ctypes.c_long, _AX_OUT_BOOL, ctypes.byref(v))
+    return bool(v.value) if hr >= 0 else True
+
+
+def _el_name(el: int) -> Optional[str]:
+    b = ctypes.c_void_p()
+    hr = com.vc(el, _EL_NAME, ctypes.c_long, _AX_OUT_VP, ctypes.byref(b))
+    return com.bstr_val(b.value) if hr >= 0 else None
+
+
+def _el_automation_id(el: int) -> Optional[str]:
+    b = ctypes.c_void_p()
+    hr = com.vc(el, _EL_AUTOMATION_ID, ctypes.c_long, _AX_OUT_VP, ctypes.byref(b))
+    return com.bstr_val(b.value) if hr >= 0 else None
+
+
+def _el_is_enabled(el: int) -> bool:
+    v = wintypes.BOOL()
+    hr = com.vc(el, _EL_IS_ENABLED, ctypes.c_long, _AX_OUT_BOOL, ctypes.byref(v))
+    return bool(v.value) if hr >= 0 else True
+
+
+def _el_has_keyboard_focus(el: int) -> bool:
+    v = wintypes.BOOL()
+    hr = com.vc(
+        el, _EL_HAS_KEYBOARD_FOCUS, ctypes.c_long, _AX_OUT_BOOL, ctypes.byref(v)
+    )
+    return bool(v.value) if hr >= 0 else False
+
+
+def _el_is_keyboard_focusable(el: int) -> bool:
+    v = wintypes.BOOL()
+    hr = com.vc(
+        el, _EL_IS_KEYBOARD_FOCUSABLE, ctypes.c_long, _AX_OUT_BOOL, ctypes.byref(v)
+    )
+    return bool(v.value) if hr >= 0 else False
+
+
+def _el_bounding_rect(el: int) -> Optional[wintypes.RECT]:
+    r = wintypes.RECT()
+    hr = com.vc(el, _EL_BOUNDING_RECT, ctypes.c_long, _AX_OUT_RECT, ctypes.byref(r))
+    return r if hr >= 0 else None
+
+
+def _el_runtime_id(el: int) -> Optional[list[int]]:
+    psa = ctypes.c_void_p()
+    hr = com.vc(el, _EL_GET_RUNTIME_ID, ctypes.c_long, _AX_OUT_VP, ctypes.byref(psa))
+    return com.sa_ints(psa.value) if hr >= 0 else None
+
+
+def _el_set_focus(el: int) -> int:
+    return com.vc(el, _EL_SET_FOCUS, ctypes.c_long, ())
+
+
+def _el_pattern(el: int, pat_id: int) -> Optional[int]:
+    iid = _PAT_IID.get(pat_id)
+    if iid is None:
+        return None
+    out = ctypes.c_void_p()
+    hr = com.vc(
+        el,
+        _EL_GET_PATTERN_AS,
+        ctypes.c_long,
+        (ctypes.c_int, ctypes.POINTER(com.GUID), ctypes.POINTER(ctypes.c_void_p)),
+        pat_id,
+        ctypes.byref(iid),
+        ctypes.byref(out),
+    )
+    return out.value if hr >= 0 and out.value else None
+
+
+def _el_center(el: int) -> tuple[int, int]:
+    r = _el_bounding_rect(el)
+    if r is None:
+        raise OperatorRuntimeException("Cannot get bounding rectangle")
+    return (r.left + r.right) // 2, (r.top + r.bottom) // 2
+
+
+_TW_ARGS = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+
+
+def _tw_first_child(walker: int, el: int) -> Optional[int]:
+    out = ctypes.c_void_p()
+    hr = com.vc(walker, _TW_FIRST_CHILD, ctypes.c_long, _TW_ARGS, el, ctypes.byref(out))
+    return out.value if hr >= 0 and out.value else None
+
+
+def _tw_next_sibling(walker: int, el: int) -> Optional[int]:
+    out = ctypes.c_void_p()
+    hr = com.vc(
+        walker, _TW_NEXT_SIBLING, ctypes.c_long, _TW_ARGS, el, ctypes.byref(out)
+    )
+    return out.value if hr >= 0 and out.value else None
+
+
+def _uia_root(uia: int) -> int:
+    out = ctypes.c_void_p()
+    hr = com.vc(uia, _UIA_GET_ROOT, ctypes.c_long, _AX_OUT_VP, ctypes.byref(out))
+    if hr < 0 or not out.value:
+        raise OperatorRuntimeException("Failed to get UIA root element")
+    return out.value
+
+
+def _uia_walker(uia: int) -> int:
+    out = ctypes.c_void_p()
+    hr = com.vc(
+        uia, _UIA_CONTROL_VIEW_WALKER, ctypes.c_long, _AX_OUT_VP, ctypes.byref(out)
+    )
+    if hr < 0 or not out.value:
+        raise OperatorRuntimeException("Failed to get UIA ControlViewWalker")
+    return out.value
+
+
+def _pat_invoke(p: int) -> None:
+    com.vc(p, _INV_INVOKE, ctypes.c_long, ())
+
+
+def _pat_toggle(p: int) -> None:
+    com.vc(p, _TOG_TOGGLE, ctypes.c_long, ())
+
+
+def _pat_toggle_state(p: int) -> int:
+    v = ctypes.c_int()
+    com.vc(p, _TOG_CURRENT_STATE, ctypes.c_long, _AX_OUT_INT, ctypes.byref(v))
+    return v.value
+
+
+def _pat_select(p: int) -> None:
+    com.vc(p, _SEL_SELECT, ctypes.c_long, ())
+
+
+def _pat_expand(p: int) -> None:
+    com.vc(p, _EC_EXPAND, ctypes.c_long, ())
+
+
+def _pat_collapse(p: int) -> None:
+    com.vc(p, _EC_COLLAPSE, ctypes.c_long, ())
+
+
+def _pat_ec_state(p: int) -> int:
+    v = ctypes.c_int()
+    com.vc(p, _EC_CURRENT_STATE, ctypes.c_long, _AX_OUT_INT, ctypes.byref(v))
+    return v.value
+
+
+def _pat_value_get(p: int) -> Optional[str]:
+    b = ctypes.c_void_p()
+    hr = com.vc(p, _VAL_CURRENT_VALUE, ctypes.c_long, _AX_OUT_VP, ctypes.byref(b))
+    return com.bstr_val(b.value) if hr >= 0 else None
+
+
+def _pat_value_is_readonly(p: int) -> bool:
+    v = wintypes.BOOL()
+    hr = com.vc(p, _VAL_IS_READONLY, ctypes.c_long, _AX_OUT_BOOL, ctypes.byref(v))
+    return bool(v.value) if hr >= 0 else False
+
+
+def _pat_value_set(p: int, text: str) -> int:
+    b = com.bstr_alloc(text)
+    try:
+        return com.vc(p, _VAL_SET_VALUE, ctypes.c_long, (ctypes.c_void_p,), b)
+    finally:
+        com.bstr_free(b)
+
+
+def _pat_scroll(p: int, h_amount: int, v_amount: int) -> int:
+    return com.vc(
+        p, _SCR_SCROLL, ctypes.c_long, (ctypes.c_int, ctypes.c_int), h_amount, v_amount
+    )
+
+
+def _pat_scroll_into_view(p: int) -> int:
+    return com.vc(p, _SCI_SCROLL_INTO_VIEW, ctypes.c_long, ())
 
 
 class Win32CuaOperator(BaseCuaOperator):
@@ -526,3 +817,264 @@ class Win32CuaOperator(BaseCuaOperator):
 
     async def wait(self) -> None:
         await asyncio.sleep(1)
+
+    def _ax_init(self) -> None:
+        if hasattr(self, "_ax_walker"):
+            return
+        self._uia: int = com.co_create_instance(
+            _CLSID_CUIAutomation, _IID_IUIAutomation
+        )
+        self._ax_walker: int = _uia_walker(self._uia)
+        self._ax_cache: dict[str, int] = {}
+        self._ax_node_count: int = 0
+
+    def _ax_element(self, node_id: str) -> int:
+        el = self._ax_cache.get(node_id)
+        if el is None:
+            raise OperatorRuntimeException(
+                f"Node '{node_id}' not found. Call axtree() first."
+            )
+        return el
+
+    def _ax_clear_cache(self) -> None:
+        for p in self._ax_cache.values():
+            try:
+                com.release(p)
+            except (ValueError, OSError):
+                pass
+        self._ax_cache.clear()
+
+    @staticmethod
+    def _ax_rid_str(el: int) -> Optional[str]:
+        rid = _el_runtime_id(el)
+        if rid:
+            return ".".join(str(v) for v in rid)
+        return None
+
+    def _ax_walk(self, el: int, depth: int, max_depth: int) -> Optional[AxNode]:
+        if depth > max_depth or self._ax_node_count >= _MAX_NODES or not el:
+            return None
+
+        try:
+            ct = _el_control_type(el)
+        except ValueError:
+            return None
+        if ct is None:
+            return None
+        if _el_is_offscreen(el):
+            return None
+
+        node_id = self._ax_rid_str(el)
+        if node_id is None:
+            return None
+        self._ax_node_count += 1
+        self._ax_cache[node_id] = el
+
+        role = _CONTROL_TYPES.get(ct, "unknown")
+        name = _el_name(el) or ""
+
+        states: list[AxNodeState] = [AxNodeState.VISIBLE]
+        if _el_is_enabled(el):
+            states.append(AxNodeState.ENABLED)
+        if _el_has_keyboard_focus(el):
+            states.append(AxNodeState.FOCUSED)
+        if _el_is_keyboard_focusable(el):
+            states.append(AxNodeState.FOCUSABLE)
+
+        sp = _el_pattern(el, _PAT_SELECTION_ITEM)
+        if sp:
+            v = wintypes.BOOL()
+            hr = com.vc(sp, 6, ctypes.c_long, _AX_OUT_BOOL, ctypes.byref(v))
+            if hr >= 0 and v.value:
+                states.append(AxNodeState.SELECTED)
+            com.release(sp)
+
+        ecp = _el_pattern(el, _PAT_EXPAND_COLLAPSE)
+        if ecp:
+            if _pat_ec_state(ecp) == 1:  # ExpandCollapseState.Expanded
+                states.append(AxNodeState.EXPANDED)
+            com.release(ecp)
+
+        tp = _el_pattern(el, _PAT_TOGGLE)
+        if tp:
+            if _pat_toggle_state(tp) == 1:  # ToggleState.On
+                states.append(AxNodeState.CHECKED)
+            com.release(tp)
+
+        vp = _el_pattern(el, _PAT_VALUE)
+        if vp:
+            if _pat_value_is_readonly(vp):
+                states.append(AxNodeState.READONLY)
+            com.release(vp)
+
+        bounds: Optional[AxNodeBounds] = None
+        rect = _el_bounding_rect(el)
+        if rect:
+            bounds = AxNodeBounds(
+                x=rect.left,
+                y=rect.top,
+                w=rect.right - rect.left,
+                h=rect.bottom - rect.top,
+            )
+
+        children: list[AxNode] = []
+        child = _tw_first_child(self._ax_walker, el)
+        while child:
+            child_node = self._ax_walk(child, depth + 1, max_depth)
+            if child_node is not None:
+                children.append(child_node)
+            nxt = _tw_next_sibling(self._ax_walker, child)
+            if child_node is None:
+                com.release(child)
+            child = nxt
+
+        return AxNode(
+            id=node_id,
+            role=role,
+            name=name,
+            bounds=bounds,
+            states=states,
+            children=children,
+        )
+
+    async def axtree(
+        self, root_node_id: Optional[str] = None, max_depth: int = 8
+    ) -> AxNode:
+        self._ax_init()
+        if root_node_id:
+            root = self._ax_element(root_node_id)
+            com.vc(root, 1, ctypes.c_ulong, ())  # AddRef before cache clear
+        else:
+            root = None
+
+        self._ax_clear_cache()
+        self._ax_node_count = 0
+
+        if root is None:
+            root = _uia_root(self._uia)
+
+        tree = self._ax_walk(root, 0, max_depth)
+        if tree is None:
+            com.release(root)
+            return AxNode(id="", role="empty")
+        return tree
+
+    async def ax_click(self, node_id: str) -> None:
+        self._ax_init()
+        el = self._ax_element(node_id)
+
+        p = _el_pattern(el, _PAT_INVOKE)
+        if p:
+            _pat_invoke(p)
+            com.release(p)
+            return
+
+        p = _el_pattern(el, _PAT_TOGGLE)
+        if p:
+            _pat_toggle(p)
+            com.release(p)
+            return
+
+        p = _el_pattern(el, _PAT_SELECTION_ITEM)
+        if p:
+            _pat_select(p)
+            com.release(p)
+            return
+
+        cx, cy = _el_center(el)
+        await self.click(button="left", x=cx, y=cy)
+
+    async def ax_double_click(self, node_id: str) -> None:
+        self._ax_init()
+        el = self._ax_element(node_id)
+        cx, cy = _el_center(el)
+        await self.double_click(x=cx, y=cy)
+
+    async def ax_type(self, text: str, node_id: str) -> None:
+        self._ax_init()
+        el = self._ax_element(node_id)
+        vp = _el_pattern(el, _PAT_VALUE)
+        if vp:
+            hr = _pat_value_set(vp, text)
+            com.release(vp)
+            if hr >= 0:
+                return
+        _el_set_focus(el)
+        await asyncio.sleep(0.05)
+        await self.type_text(text)
+
+    async def ax_scroll(
+        self,
+        scroll_x: int,
+        scroll_y: int,
+        node_id: str,
+    ) -> None:
+        self._ax_init()
+        el = self._ax_element(node_id)
+
+        sp = _el_pattern(el, _PAT_SCROLL)
+        if sp:
+            h = self._ax_scroll_amount(scroll_x)
+            v = self._ax_scroll_amount(scroll_y)
+            hr = _pat_scroll(sp, h, v)
+            com.release(sp)
+            if hr >= 0:
+                return
+
+        sip = _el_pattern(el, _PAT_SCROLL_ITEM)
+        if sip:
+            _pat_scroll_into_view(sip)
+            com.release(sip)
+
+        cx, cy = _el_center(el)
+        await self.scroll(scroll_x, scroll_y, x=cx, y=cy)
+
+    async def ax_focus(self, node_id: str) -> None:
+        self._ax_init()
+        el = self._ax_element(node_id)
+        hr = _el_set_focus(el)
+        if hr < 0:
+            raise OperatorRuntimeException(
+                f"Cannot focus node '{node_id}': HRESULT 0x{hr & 0xFFFFFFFF:08X}"
+            )
+
+    async def ax_expand(self, node_id: str) -> None:
+        self._ax_init()
+        el = self._ax_element(node_id)
+        p = _el_pattern(el, _PAT_EXPAND_COLLAPSE)
+        if p is None:
+            raise OperatorRuntimeException(
+                f"Node '{node_id}' does not support expand/collapse."
+            )
+        _pat_expand(p)
+        com.release(p)
+
+    async def ax_collapse(self, node_id: str) -> None:
+        self._ax_init()
+        el = self._ax_element(node_id)
+        p = _el_pattern(el, _PAT_EXPAND_COLLAPSE)
+        if p is None:
+            raise OperatorRuntimeException(
+                f"Node '{node_id}' does not support expand/collapse."
+            )
+        _pat_collapse(p)
+        com.release(p)
+
+    async def ax_select(self, node_id: str) -> None:
+        self._ax_init()
+        el = self._ax_element(node_id)
+        p = _el_pattern(el, _PAT_SELECTION_ITEM)
+        if p is None:
+            raise OperatorRuntimeException(
+                f"Node '{node_id}' does not support selection."
+            )
+        _pat_select(p)
+        com.release(p)
+
+    @staticmethod
+    def _ax_scroll_amount(value: int) -> int:
+        if value == 0:
+            return 2  # NoAmount
+        if abs(value) >= 120:
+            return 3 if value > 0 else 0  # Large
+        return 4 if value > 0 else 1  # Small
