@@ -14,6 +14,16 @@ class AxNodeState(StrEnum):
     READONLY = "readonly"
 
 
+class AxAction(StrEnum):
+    CLICK = "click"
+    FOCUS = "focus"
+    TYPE = "type"
+    SCROLL = "scroll"
+    EXPAND = "expand"
+    COLLAPSE = "collapse"
+    SELECT = "select"
+
+
 @dataclass
 class AxNodeBounds:
     x: int
@@ -26,10 +36,14 @@ class AxNodeBounds:
 class AxNode:
     id: str
     role: str
+    secondary_role: Optional[str] = None
     name: str = ""
     bounds: Optional[AxNodeBounds] = None
     states: list[AxNodeState] = field(default_factory=list)
     children: list["AxNode"] = field(default_factory=list)
+    description: str = ""
+    value: Optional[str] = None
+    allowed_actions: list[AxAction] = field(default_factory=list)
 
 
 @dataclass

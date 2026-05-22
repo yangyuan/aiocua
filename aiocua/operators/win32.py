@@ -5,7 +5,13 @@ from io import BytesIO
 from ctypes import wintypes
 from typing import Optional, Union
 from PIL import ImageGrab, Image
-from aiocua.contracts.computer import AxNode, AxNodeBounds, AxNodeState, MonitorMetadata
+from aiocua.contracts.computer import (
+    AxAction,
+    AxNode,
+    AxNodeBounds,
+    AxNodeState,
+    MonitorMetadata,
+)
 from aiocua.contracts.error import OperatorRuntimeException
 from aiocua.helpers import com
 from aiocua.operators.base import BaseCuaOperator
@@ -268,11 +274,12 @@ _EL_GET_PATTERN_AS = 14
 _EL_CONTROL_TYPE = 21
 _EL_NAME = 23
 _EL_IS_ENABLED = 28
-_EL_AUTOMATION_ID = 29
 _EL_HAS_KEYBOARD_FOCUS = 26
 _EL_IS_KEYBOARD_FOCUSABLE = 27
 _EL_IS_OFFSCREEN = 38
+_EL_HELP_TEXT = 31
 _EL_BOUNDING_RECT = 43
+_EL_ARIA_ROLE = 45
 _TW_FIRST_CHILD = 4
 _TW_NEXT_SIBLING = 6
 _INV_INVOKE = 3
@@ -350,16 +357,22 @@ def _el_is_offscreen(el: int) -> bool:
     return bool(v.value) if hr >= 0 else True
 
 
+def _el_string_property(el: int, property_idx: int) -> Optional[str]:
+    b = ctypes.c_void_p()
+    hr = com.vc(el, property_idx, ctypes.c_long, _AX_OUT_VP, ctypes.byref(b))
+    return com.bstr_val(b.value) if hr >= 0 else None
+
+
 def _el_name(el: int) -> Optional[str]:
-    b = ctypes.c_void_p()
-    hr = com.vc(el, _EL_NAME, ctypes.c_long, _AX_OUT_VP, ctypes.byref(b))
-    return com.bstr_val(b.value) if hr >= 0 else None
+    return _el_string_property(el, _EL_NAME)
 
 
-def _el_automation_id(el: int) -> Optional[str]:
-    b = ctypes.c_void_p()
-    hr = com.vc(el, _EL_AUTOMATION_ID, ctypes.c_long, _AX_OUT_VP, ctypes.byref(b))
-    return com.bstr_val(b.value) if hr >= 0 else None
+def _el_description(el: int) -> str:
+    return _el_string_property(el, _EL_HELP_TEXT) or ""
+
+
+def _el_secondary_role(el: int) -> Optional[str]:
+    return _el_string_property(el, _EL_ARIA_ROLE) or None
 
 
 def _el_is_enabled(el: int) -> bool:
@@ -509,6 +522,57 @@ def _pat_value_set(p: int, text: str) -> int:
         return com.vc(p, _VAL_SET_VALUE, ctypes.c_long, (ctypes.c_void_p,), b)
     finally:
         com.bstr_free(b)
+
+
+def _ax_allowed_actions(el: int, bounds: Optional[AxNodeBounds]) -> list[AxAction]:
+    actions: list[AxAction] = []
+
+    invoke = _el_pattern(el, _PAT_INVOKE)
+    if invoke:
+        com.release(invoke)
+
+    toggle = _el_pattern(el, _PAT_TOGGLE)
+    if toggle:
+        com.release(toggle)
+
+    selection = _el_pattern(el, _PAT_SELECTION_ITEM)
+    if selection:
+        com.release(selection)
+
+    if invoke or toggle or selection or bounds is not None:
+        actions.append(AxAction.CLICK)
+    if _el_is_keyboard_focusable(el):
+        actions.append(AxAction.FOCUS)
+
+    value_pattern = _el_pattern(el, _PAT_VALUE)
+    if value_pattern:
+        if not _pat_value_is_readonly(value_pattern):
+            actions.append(AxAction.TYPE)
+        com.release(value_pattern)
+
+    expand_collapse = _el_pattern(el, _PAT_EXPAND_COLLAPSE)
+    if expand_collapse:
+        state = _pat_ec_state(expand_collapse)
+        if state == 0:  # ExpandCollapseState.Collapsed
+            actions.append(AxAction.EXPAND)
+        elif state in (1, 2):  # Expanded or PartiallyExpanded
+            actions.append(AxAction.COLLAPSE)
+        com.release(expand_collapse)
+
+    scroll = _el_pattern(el, _PAT_SCROLL)
+    if scroll:
+        actions.append(AxAction.SCROLL)
+        com.release(scroll)
+
+    scroll_item = _el_pattern(el, _PAT_SCROLL_ITEM)
+    if scroll_item:
+        if AxAction.SCROLL not in actions:
+            actions.append(AxAction.SCROLL)
+        com.release(scroll_item)
+
+    if selection:
+        actions.append(AxAction.SELECT)
+    return actions
 
 
 def _pat_scroll(p: int, h_amount: int, v_amount: int) -> int:
@@ -901,8 +965,10 @@ class Win32CuaOperator(BaseCuaOperator):
                 states.append(AxNodeState.CHECKED)
             com.release(tp)
 
+        value: Optional[str] = None
         vp = _el_pattern(el, _PAT_VALUE)
         if vp:
+            value = _pat_value_get(vp)
             if _pat_value_is_readonly(vp):
                 states.append(AxNodeState.READONLY)
             com.release(vp)
@@ -931,10 +997,14 @@ class Win32CuaOperator(BaseCuaOperator):
         return AxNode(
             id=node_id,
             role=role,
+            secondary_role=_el_secondary_role(el),
             name=name,
             bounds=bounds,
             states=states,
             children=children,
+            description=_el_description(el),
+            value=value,
+            allowed_actions=_ax_allowed_actions(el, bounds),
         )
 
     async def axtree(

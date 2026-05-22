@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import json
 import sys, os
 
@@ -11,8 +12,8 @@ async def main():
     operator = CuaOperator()
 
     # Get the full desktop accessibility tree
-    tree_json = await operator.axtree()
-    tree = json.loads(tree_json)
+    tree = await operator.axtree()
+    json_tree = json.dumps(dataclasses.asdict(tree), ensure_ascii=False)
 
     await asyncio.sleep(1)
 
